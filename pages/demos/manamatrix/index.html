@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>manamatrix.eth | Evangelion Crypto Dashboard</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&display=swap');
+    
+    :root {
+      /* Evangelion Color Palette */
+      --eva-navy: #000053;
+      --eva-navy-dark: #00002b;
+      --eva-purple: #965fd4;
+      --eva-purple-dark: #5a3a80;
+      --eva-green: #58f2a5;
+      --eva-green-glow: #00ff88;
+      --eva-red: #e81900;
+      --eva-red-glow: #ff3333;
+      --eva-orange: #ff6600;
+      --eva-orange-glow: #ff9933;
+      --eva-cyan: #00d4ff;
+      --eva-white: #f0f0f0;
+      --eva-gray: #8888aa;
+      
+      /* CRT Effect */
+      --scanline-opacity: 0.03;
+    }
+    
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--eva-navy-dark);
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--eva-white);
+    }
+    
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+    
+    /* CRT Scanlines Overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, var(--scanline-opacity)) 2px,
+        rgba(0, 0, 0, var(--scanline-opacity)) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+    }
+    
+    /* Header */
+    .header {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px;
+      background: linear-gradient(180deg, rgba(0, 0, 83, 0.95) 0%, rgba(0, 0, 43, 0.95) 100%);
+      border-bottom: 1px solid var(--eva-purple);
+      position: relative;
+    }
+    
+    .header::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, 
+        transparent 0%, 
+        var(--eva-green) 20%, 
+        var(--eva-green) 80%, 
+        transparent 100%
+      );
+      opacity: 0.6;
+    }
+    
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    
+    .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: var(--eva-green);
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 10px var(--eva-green), 0 0 20px var(--eva-green-glow); }
+      50% { box-shadow: 0 0 20px var(--eva-green), 0 0 40px var(--eva-green-glow); }
+    }
+    
+    .logo-text {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: var(--eva-green);
+      text-shadow: 0 0 10px var(--eva-green-glow);
+    }
+    
+    .header-stats {
+      display: flex;
+      gap: 32px;
+    }
+    
+    .stat {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+    
+    .stat-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--eva-gray);
+    }
+    
+    .stat-value {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--eva-white);
+    }
+    
+    .stat-value.positive { color: var(--eva-green); }
+    .stat-value.negative { color: var(--eva-red); }
+    
+    .header-controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    
+    .chain-selector {
+      display: flex;
+      gap: 4px;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 4px;
+      border-radius: 4px;
+      border: 1px solid var(--eva-purple-dark);
+    }
+    
+    .chain-btn {
+      padding: 6px 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      border: none;
+      background: transparent;
+      color: var(--eva-gray);
+      cursor: pointer;
+      border-radius: 2px;
+      transition: all 0.2s;
+      text-transform: uppercase;
+    }
+    
+    .chain-btn:hover {
+      color: var(--eva-white);
+      background: rgba(150, 95, 212, 0.2);
+    }
+    
+    .chain-btn.active {
+      background: var(--eva-purple);
+      color: var(--eva-white);
+      box-shadow: 0 0 10px var(--eva-purple);
+    }
+    
+    .search-box {
+      position: relative;
+    }
+    
+    .search-input {
+      width: 200px;
+      padding: 8px 12px 8px 32px;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--eva-purple-dark);
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--eva-white);
+      outline: none;
+      transition: all 0.2s;
+    }
+    
+    .search-input::placeholder {
+      color: var(--eva-gray);
+    }
+    
+    .search-input:focus {
+      border-color: var(--eva-green);
+      box-shadow: 0 0 10px rgba(88, 242, 165, 0.3);
+    }
+    
+    .search-icon {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--eva-gray);
+      font-size: 12px;
+    }
+    
+    /* Filters Bar */
+    .filters-bar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 24px;
+      background: rgba(0, 0, 43, 0.8);
+      border-bottom: 1px solid rgba(150, 95, 212, 0.3);
+    }
+    
+    .filter-btn {
+      padding: 6px 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border: 1px solid var(--eva-purple-dark);
+      background: transparent;
+      color: var(--eva-gray);
+      cursor: pointer;
+      border-radius: 2px;
+      transition: all 0.2s;
+    }
+    
+    .filter-btn:hover {
+      border-color: var(--eva-purple);
+      color: var(--eva-white);
+    }
+    
+    .filter-btn.active {
+      border-color: var(--eva-green);
+      color: var(--eva-green);
+      box-shadow: 0 0 8px rgba(88, 242, 165, 0.3);
+    }
+    
+    .perf-counter {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--eva-gray);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    
+    .perf-counter span {
+      color: var(--eva-green);
+    }
+    
+    /* Main Canvas Container */
+    .canvas-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    #token-grid {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    
+    /* Expanded Token Detail Overlay */
+    .token-detail {
+      position: absolute;
+      display: none;
+      background: rgba(0, 0, 43, 0.95);
+      border: 1px solid var(--eva-purple);
+      border-radius: 4px;
+      padding: 16px;
+      min-width: 320px;
+      box-shadow: 
+        0 0 20px rgba(150, 95, 212, 0.3),
+        inset 0 0 20px rgba(0, 0, 0, 0.5);
+      z-index: 100;
+      pointer-events: none;
+    }
+    
+    .token-detail.visible {
+      display: block;
+    }
+    
+    .token-detail-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    
+    .token-detail-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--eva-purple);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 700;
+      font-size: 16px;
+    }
+    
+    .token-detail-name {
+      flex: 1;
+    }
+    
+    .token-detail-name h3 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--eva-white);
+      margin-bottom: 2px;
+    }
+    
+    .token-detail-name p {
+      font-size: 11px;
+      color: var(--eva-gray);
+    }
+    
+    .token-detail-price {
+      text-align: right;
+    }
+    
+    .token-detail-price .price {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--eva-white);
+    }
+    
+    .token-detail-price .change {
+      font-size: 12px;
+      font-weight: 600;
+    }
+    
+    .token-detail-price .change.positive { color: var(--eva-green); }
+    .token-detail-price .change.negative { color: var(--eva-red); }
+    
+    .token-detail-chart {
+      height: 80px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 4px;
+      margin-bottom: 12px;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .token-detail-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    
+    .token-stat {
+      text-align: center;
+      padding: 8px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 2px;
+    }
+    
+    .token-stat-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--eva-gray);
+      margin-bottom: 4px;
+    }
+    
+    .token-stat-value {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--eva-white);
+    }
+    
+    /* Alert Flash Effect */
+    .alert-flash {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      z-index: 9998;
+      opacity: 0;
+      transition: opacity 0.1s;
+    }
+    
+    .alert-flash.pump {
+      background: radial-gradient(circle at center, rgba(88, 242, 165, 0.1) 0%, transparent 70%);
+      opacity: 1;
+    }
+    
+    .alert-flash.dump {
+      background: radial-gradient(circle at center, rgba(232, 25, 0, 0.15) 0%, transparent 70%);
+      opacity: 1;
+    }
+    
+    /* Loading State */
+    .loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--eva-navy-dark);
+      z-index: 1000;
+    }
+    
+    .loading-text {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 4px;
+      color: var(--eva-green);
+      margin-top: 24px;
+      animation: blink 1s step-end infinite;
+    }
+    
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    
+    .loading-bar {
+      width: 200px;
+      height: 4px;
+      background: rgba(150, 95, 212, 0.3);
+      border-radius: 2px;
+      margin-top: 16px;
+      overflow: hidden;
+    }
+    
+    .loading-bar-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--eva-purple), var(--eva-green));
+      transition: width 0.3s;
+    }
+    
+    .eva-warning {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--eva-orange);
+      text-shadow: 0 0 10px var(--eva-orange-glow);
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 100;
+    }
+    
+    .eva-warning.visible {
+      opacity: 1;
+      animation: warning-pulse 0.5s ease-in-out infinite alternate;
+    }
+    
+    @keyframes warning-pulse {
+      from { opacity: 0.7; }
+      to { opacity: 1; }
+    }
+    
+    /* Mobile Styles */
+    @media (max-width: 768px) {
+      .header {
+        padding: 10px 16px;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      
+      .header-stats {
+        display: none;
+      }
+      
+      .search-input {
+        width: 140px;
+      }
+      
+      .filters-bar {
+        padding: 8px 16px;
+        overflow-x: auto;
+      }
+      
+      .logo-text {
+        font-size: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="logo">
+      <div class="logo-icon"></div>
+      <span class="logo-text">MANAMATRIX</span>
+    </div>
+    
+    <div class="header-stats">
+      <div class="stat">
+        <span class="stat-label">24h Volume</span>
+        <span class="stat-value" id="total-volume">$0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Market Cap</span>
+        <span class="stat-value" id="total-mcap">$0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Trending</span>
+        <span class="stat-value positive" id="trending-count">0</span>
+      </div>
+    </div>
+    
+    <div class="header-controls">
+      <div class="chain-selector">
+        <button class="chain-btn active" data-chain="solana">SOL</button>
+        <button class="chain-btn" data-chain="ethereum">ETH</button>
+        <button class="chain-btn" data-chain="base">BASE</button>
+        <button class="chain-btn" data-chain="bsc">BSC</button>
+      </div>
+      <div class="search-box">
+        <span class="search-icon">&#128269;</span>
+        <input type="text" class="search-input" placeholder="Search tokens..." id="search-input">
+      </div>
+    </div>
+  </header>
+  
+  <div class="filters-bar">
+    <button class="filter-btn active" data-filter="trending">Trending</button>
+    <button class="filter-btn" data-filter="gainers">Top Gainers</button>
+    <button class="filter-btn" data-filter="losers">Top Losers</button>
+    <button class="filter-btn" data-filter="new">New Pairs</button>
+    <button class="filter-btn" data-filter="volume">Volume Spikes</button>
+    <div class="perf-counter">Layout: <span id="perf-time">0.00</span>ms</div>
+  </div>
+  
+  <div class="canvas-container">
+    <canvas id="token-grid"></canvas>
+    
+    <div class="loading-overlay" id="loading">
+      <div class="logo-icon" style="width: 64px; height: 64px;"></div>
+      <div class="loading-text">Initializing MAGI System</div>
+      <div class="loading-bar">
+        <div class="loading-bar-fill" id="loading-bar"></div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="token-detail" id="token-detail">
+    <div class="token-detail-header">
+      <div class="token-detail-icon" id="detail-icon">?</div>
+      <div class="token-detail-name">
+        <h3 id="detail-name">Token Name</h3>
+        <p id="detail-address">0x...</p>
+      </div>
+      <div class="token-detail-price">
+        <div class="price" id="detail-price">$0.00</div>
+        <div class="change positive" id="detail-change">+0.00%</div>
+      </div>
+    </div>
+    <div class="token-detail-chart" id="detail-chart"></div>
+    <div class="token-detail-stats">
+      <div class="token-stat">
+        <div class="token-stat-label">Volume 24h</div>
+        <div class="token-stat-value" id="detail-volume">$0</div>
+      </div>
+      <div class="token-stat">
+        <div class="token-stat-label">Liquidity</div>
+        <div class="token-stat-value" id="detail-liquidity">$0</div>
+      </div>
+      <div class="token-stat">
+        <div class="token-stat-label">Market Cap</div>
+        <div class="token-stat-value" id="detail-mcap">$0</div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="alert-flash" id="alert-flash"></div>
+  <div class="eva-warning" id="eva-warning">WARNING: High Volatility Detected</div>
+  
+  <script type="module" src="./index.ts"></script>
+</body>
+</html>
