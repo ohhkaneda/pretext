@@ -1,15 +1,14 @@
 /*
-  manamatrix.eth - Evangelion-inspired Crypto Dashboard
+  manamatrix.eth - FinViz-style Crypto Heatmap
   
-  A BioMap-style dynamic token grid using Pretext for perfect text layout.
   Features:
-  - Cursor-reactive expanding/contracting tiles
-  - Real-time price data from DexScreener API
-  - Evangelion terminal aesthetic with CRT effects
-  - Performance-optimized canvas rendering
+  - Treemap layout with tiles sized by market cap
+  - Color gradient based on 24h % change (red to green)
+  - Hover panel showing DEX trades and LP pools
+  - Real-time data from DexScreener API
 */
 
-import { prepare, layout, prepareWithSegments, type PreparedText, type LayoutResult } from '../../../src/layout.ts'
+import { prepare, layout, type PreparedText } from '../../../src/layout.ts'
 
 // ==================== TYPES ====================
 
@@ -22,152 +21,124 @@ type Token = {
   volume24h: number
   liquidity: number
   marketCap: number
-  priceHistory: number[] // Last 24 data points for sparkline
   chain: string
   pairAddress: string
   imageUrl?: string
+  txns24h: number
+  dexId: string
 }
 
-type TokenTile = {
+type TreemapTile = {
   token: Token
   x: number
   y: number
   width: number
   height: number
-  targetWidth: number
-  targetHeight: number
-  scale: number
-  opacity: number
-  preparedName: PreparedText
-  preparedSymbol: PreparedText
-  preparedPrice: PreparedText
-  preparedChange: PreparedText
+  color: string
+  textColor: string
 }
 
-type GridState = {
-  tiles: TokenTile[]
-  hoveredTile: TokenTile | null
-  selectedChain: string
-  selectedFilter: string
-  searchQuery: string
+type Trade = {
+  type: 'buy' | 'sell'
+  amount: string
+  price: string
+  time: string
 }
 
-type LayoutConfig = {
-  baseWidth: number
-  baseHeight: number
-  expandedWidth: number
-  expandedHeight: number
-  gap: number
-  padding: number
+type Pool = {
+  pair: string
+  dex: string
+  liquidity: number
+  volume24h: number
+  apr: number
 }
-
-// ==================== CONSTANTS ====================
-
-const EVANGELION_COLORS = {
-  navy: '#000053',
-  navyDark: '#00002b',
-  purple: '#965fd4',
-  purpleDark: '#5a3a80',
-  green: '#58f2a5',
-  greenGlow: '#00ff88',
-  red: '#e81900',
-  redGlow: '#ff3333',
-  orange: '#ff6600',
-  orangeGlow: '#ff9933',
-  cyan: '#00d4ff',
-  white: '#f0f0f0',
-  gray: '#8888aa',
-}
-
-const FONTS = {
-  symbol: '600 14px "JetBrains Mono", monospace',
-  name: '400 11px "JetBrains Mono", monospace',
-  price: '700 16px "JetBrains Mono", monospace',
-  change: '600 12px "JetBrains Mono", monospace',
-  detail: '500 10px "JetBrains Mono", monospace',
-}
-
-const CONFIG: LayoutConfig = {
-  baseWidth: 160,
-  baseHeight: 120,
-  expandedWidth: 280,
-  expandedHeight: 200,
-  gap: 8,
-  padding: 24,
-}
-
-const PROXIMITY_RADIUS = 200 // Pixels
-const ANIMATION_SPEED = 0.15
 
 // ==================== STATE ====================
 
-const state: GridState = {
-  tiles: [],
-  hoveredTile: null,
-  selectedChain: 'solana',
-  selectedFilter: 'trending',
-  searchQuery: '',
-}
-
 let canvas: HTMLCanvasElement
 let ctx: CanvasRenderingContext2D
-let mouseX = -1000
-let mouseY = -1000
-let lastFrameTime = 0
-let animationId: number
+let tokens: Token[] = []
+let tiles: TreemapTile[] = []
+let hoveredTile: TreemapTile | null = null
+let selectedChain = 'solana'
+let selectedFilter = 'mcap'
+let searchQuery = ''
 let isLoading = true
-let loadingProgress = 0
+let activeTab = 'trades'
 
 // ==================== DOM ELEMENTS ====================
 
 const loadingOverlay = document.getElementById('loading') as HTMLDivElement
-const loadingBar = document.getElementById('loading-bar') as HTMLDivElement
-const perfCounter = document.getElementById('perf-time') as HTMLSpanElement
-const tokenDetail = document.getElementById('token-detail') as HTMLDivElement
-const alertFlash = document.getElementById('alert-flash') as HTMLDivElement
-const evaWarning = document.getElementById('eva-warning') as HTMLDivElement
-const searchInput = document.getElementById('search-input') as HTMLInputElement
+const hoverPanel = document.getElementById('hover-panel') as HTMLDivElement
 const totalVolumeEl = document.getElementById('total-volume') as HTMLSpanElement
 const totalMcapEl = document.getElementById('total-mcap') as HTMLSpanElement
-const trendingCountEl = document.getElementById('trending-count') as HTMLSpanElement
+const gainersCountEl = document.getElementById('gainers-count') as HTMLSpanElement
+const losersCountEl = document.getElementById('losers-count') as HTMLSpanElement
+const searchInput = document.getElementById('search-input') as HTMLInputElement
+
+// ==================== COLOR FUNCTIONS ====================
+
+function getHeatmapColor(percentChange: number): string {
+  // Clamp between -50 and +50
+  const clamped = Math.max(-50, Math.min(50, percentChange))
+  
+  if (clamped >= 0) {
+    // Green gradient for gains
+    const intensity = clamped / 50
+    if (intensity > 0.6) return '#00cc00'
+    if (intensity > 0.4) return '#00aa00'
+    if (intensity > 0.2) return '#008800'
+    if (intensity > 0.1) return '#006600'
+    if (intensity > 0.02) return '#004400'
+    return '#003300'
+  } else {
+    // Red gradient for losses
+    const intensity = Math.abs(clamped) / 50
+    if (intensity > 0.6) return '#cc0000'
+    if (intensity > 0.4) return '#aa0000'
+    if (intensity > 0.2) return '#880000'
+    if (intensity > 0.1) return '#660000'
+    if (intensity > 0.02) return '#440000'
+    return '#330000'
+  }
+}
+
+function getTextColor(percentChange: number): string {
+  const abs = Math.abs(percentChange)
+  // Light text for dark backgrounds, ensure readability
+  if (abs > 20) return '#ffffff'
+  if (abs > 10) return '#eeeeee'
+  return '#cccccc'
+}
 
 // ==================== INITIALIZATION ====================
 
 async function init() {
-  canvas = document.getElementById('token-grid') as HTMLCanvasElement
+  canvas = document.getElementById('heatmap-canvas') as HTMLCanvasElement
   const context = canvas.getContext('2d')
   if (!context) throw new Error('Could not get canvas context')
   ctx = context
 
   resizeCanvas()
-  window.addEventListener('resize', resizeCanvas)
+  window.addEventListener('resize', handleResize)
   canvas.addEventListener('mousemove', handleMouseMove)
   canvas.addEventListener('mouseleave', handleMouseLeave)
   canvas.addEventListener('click', handleClick)
 
   setupEventListeners()
   
-  // Load fonts
   await document.fonts.ready
-  updateLoadingProgress(20)
-
-  // Fetch initial data
   await fetchTokenData()
-  updateLoadingProgress(100)
 
-  // Hide loading overlay
+  isLoading = false
+  loadingOverlay.style.opacity = '0'
   setTimeout(() => {
-    loadingOverlay.style.opacity = '0'
-    setTimeout(() => {
-      loadingOverlay.style.display = 'none'
-      isLoading = false
-    }, 300)
-  }, 500)
+    loadingOverlay.style.display = 'none'
+  }, 300)
 
-  // Start render loop
-  requestAnimationFrame(renderLoop)
-
-  // Start polling for updates
+  render()
+  
+  // Poll for updates every 30 seconds
   setInterval(fetchTokenData, 30000)
 }
 
@@ -179,7 +150,7 @@ function setupEventListeners() {
       const chain = target.dataset.chain || 'solana'
       document.querySelectorAll('.chain-btn').forEach(b => b.classList.remove('active'))
       target.classList.add('active')
-      state.selectedChain = chain
+      selectedChain = chain
       fetchTokenData()
     })
   })
@@ -188,24 +159,43 @@ function setupEventListeners() {
   document.querySelectorAll('.filter-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       const target = e.target as HTMLButtonElement
-      const filter = target.dataset.filter || 'trending'
+      const filter = target.dataset.filter || 'mcap'
       document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'))
       target.classList.add('active')
-      state.selectedFilter = filter
-      sortAndFilterTiles()
+      selectedFilter = filter
+      buildTreemap()
+      render()
     })
   })
 
   // Search
   searchInput.addEventListener('input', (e) => {
-    state.searchQuery = (e.target as HTMLInputElement).value.toLowerCase()
-    sortAndFilterTiles()
+    searchQuery = (e.target as HTMLInputElement).value.toLowerCase()
+    buildTreemap()
+    render()
   })
-}
 
-function updateLoadingProgress(progress: number) {
-  loadingProgress = progress
-  loadingBar.style.width = `${progress}%`
+  // Panel tabs
+  document.querySelectorAll('.panel-tab').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const target = e.target as HTMLButtonElement
+      const tab = target.dataset.tab || 'trades'
+      document.querySelectorAll('.panel-tab').forEach(b => b.classList.remove('active'))
+      target.classList.add('active')
+      activeTab = tab
+      
+      const tradesContent = document.getElementById('trades-content')!
+      const poolsContent = document.getElementById('pools-content')!
+      
+      if (tab === 'trades') {
+        tradesContent.style.display = 'block'
+        poolsContent.style.display = 'none'
+      } else {
+        tradesContent.style.display = 'none'
+        poolsContent.style.display = 'block'
+      }
+    })
+  })
 }
 
 function resizeCanvas() {
@@ -221,556 +211,501 @@ function resizeCanvas() {
   canvas.style.height = `${rect.height}px`
   
   ctx.scale(dpr, dpr)
-  
-  layoutTiles()
+}
+
+function handleResize() {
+  resizeCanvas()
+  buildTreemap()
+  render()
 }
 
 // ==================== DATA FETCHING ====================
 
 async function fetchTokenData() {
   try {
-    const chainId = getChainId(state.selectedChain)
-    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/trending/${chainId}`)
+    // Try boosted tokens endpoint first
+    const response = await fetch('https://api.dexscreener.com/token-boosts/latest/v1')
     
-    if (!response.ok) {
-      // Fallback to search for popular tokens if trending fails
-      await fetchFallbackData()
-      return
+    if (response.ok) {
+      const data = await response.json()
+      if (Array.isArray(data) && data.length > 0) {
+        await processBoostData(data)
+        return
+      }
     }
-
-    const data = await response.json()
-    processTokenData(data)
+    
+    // Fallback to mock data
+    generateMockData()
   } catch (error) {
     console.error('Failed to fetch token data:', error)
-    await fetchFallbackData()
+    generateMockData()
   }
 }
 
-async function fetchFallbackData() {
-  try {
-    // Use boosted tokens endpoint as fallback
-    const response = await fetch('https://api.dexscreener.com/token-boosts/latest/v1')
-    if (!response.ok) {
-      // Generate mock data if API fails
-      generateMockData()
-      return
+async function processBoostData(data: any[]) {
+  // Filter by selected chain and get top tokens
+  const filtered = data
+    .filter(item => !selectedChain || item.chainId === selectedChain || selectedChain === 'solana')
+    .slice(0, 60)
+
+  // Fetch pair data for each token
+  const tokenPromises = filtered.map(async (item) => {
+    try {
+      const pairResponse = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${item.tokenAddress}`)
+      if (pairResponse.ok) {
+        const pairData = await pairResponse.json()
+        const pair = pairData.pairs?.[0]
+        if (pair) {
+          return {
+            address: item.tokenAddress,
+            symbol: pair.baseToken?.symbol || 'UNKNOWN',
+            name: pair.baseToken?.name || 'Unknown Token',
+            price: parseFloat(pair.priceUsd) || 0,
+            priceChange24h: parseFloat(pair.priceChange?.h24) || (Math.random() - 0.5) * 100,
+            volume24h: parseFloat(pair.volume?.h24) || Math.random() * 1000000,
+            liquidity: parseFloat(pair.liquidity?.usd) || Math.random() * 500000,
+            marketCap: parseFloat(pair.fdv) || Math.random() * 10000000,
+            chain: item.chainId || selectedChain,
+            pairAddress: pair.pairAddress || item.tokenAddress,
+            txns24h: (pair.txns?.h24?.buys || 0) + (pair.txns?.h24?.sells || 0),
+            dexId: pair.dexId || 'unknown',
+            imageUrl: item.icon,
+          }
+        }
+      }
+    } catch (e) {
+      // Ignore individual token fetch errors
     }
+    
+    // Return mock data for failed fetches
+    return {
+      address: item.tokenAddress,
+      symbol: item.symbol || 'TKN',
+      name: item.name || 'Token',
+      price: Math.random() * 10,
+      priceChange24h: (Math.random() - 0.5) * 100,
+      volume24h: Math.random() * 1000000,
+      liquidity: Math.random() * 500000,
+      marketCap: Math.random() * 10000000,
+      chain: item.chainId || selectedChain,
+      pairAddress: item.tokenAddress,
+      txns24h: Math.floor(Math.random() * 5000),
+      dexId: 'raydium',
+      imageUrl: item.icon,
+    }
+  })
 
-    const data = await response.json()
-    processBoostedData(data)
-  } catch (error) {
-    console.error('Fallback fetch failed:', error)
-    generateMockData()
-  }
-}
-
-function getChainId(chain: string): string {
-  const chainMap: Record<string, string> = {
-    solana: 'solana',
-    ethereum: 'ethereum',
-    base: 'base',
-    bsc: 'bsc',
-  }
-  return chainMap[chain] || 'solana'
-}
-
-function processTokenData(data: any) {
-  if (!data || !Array.isArray(data)) {
-    generateMockData()
-    return
-  }
-
-  const tokens: Token[] = data.slice(0, 50).map((item: any) => ({
-    address: item.tokenAddress || item.baseToken?.address || generateAddress(),
-    symbol: item.baseToken?.symbol || item.symbol || 'UNKNOWN',
-    name: item.baseToken?.name || item.name || 'Unknown Token',
-    price: parseFloat(item.priceUsd) || Math.random() * 100,
-    priceChange24h: parseFloat(item.priceChange?.h24) || (Math.random() - 0.5) * 100,
-    volume24h: parseFloat(item.volume?.h24) || Math.random() * 10000000,
-    liquidity: parseFloat(item.liquidity?.usd) || Math.random() * 5000000,
-    marketCap: parseFloat(item.fdv) || Math.random() * 100000000,
-    priceHistory: generatePriceHistory(parseFloat(item.priceUsd) || 1),
-    chain: state.selectedChain,
-    pairAddress: item.pairAddress || generateAddress(),
-    imageUrl: item.info?.imageUrl,
-  }))
-
-  createTilesFromTokens(tokens)
-  updateStats(tokens)
-}
-
-function processBoostedData(data: any[]) {
-  if (!data || !Array.isArray(data)) {
-    generateMockData()
-    return
-  }
-
-  const tokens: Token[] = data.slice(0, 50).map((item: any) => ({
-    address: item.tokenAddress || generateAddress(),
-    symbol: item.symbol || 'BOOST',
-    name: item.name || 'Boosted Token',
-    price: Math.random() * 10,
-    priceChange24h: (Math.random() - 0.5) * 100,
-    volume24h: Math.random() * 10000000,
-    liquidity: Math.random() * 5000000,
-    marketCap: Math.random() * 100000000,
-    priceHistory: generatePriceHistory(Math.random() * 10),
-    chain: item.chainId || state.selectedChain,
-    pairAddress: generateAddress(),
-    imageUrl: item.icon,
-  }))
-
-  createTilesFromTokens(tokens)
-  updateStats(tokens)
+  tokens = await Promise.all(tokenPromises)
+  updateStats()
+  buildTreemap()
+  render()
 }
 
 function generateMockData() {
-  const mockSymbols = ['PEPE', 'BONK', 'WIF', 'BOME', 'MEME', 'DOGE', 'SHIB', 'FLOKI', 'ELON', 'MOON', 
-                       'WOJAK', 'CHAD', 'PUMP', 'BASED', 'SIGMA', 'COPE', 'HOPIUM', 'WAGMI', 'NGMI', 'SER',
-                       'FREN', 'MFER', 'LMAO', 'KEK', 'DEFI', 'ALPHA', 'BETA', 'GAMMA', 'DELTA', 'OMEGA']
+  const mockSymbols = [
+    'BTC', 'ETH', 'SOL', 'PEPE', 'BONK', 'WIF', 'DOGE', 'SHIB',
+    'FLOKI', 'MEME', 'BOME', 'POPCAT', 'MEW', 'BRETT', 'TURBO',
+    'WOJAK', 'CHAD', 'MFER', 'PUMP', 'BASED', 'COPE', 'HOPIUM',
+    'WAGMI', 'NGMI', 'FREN', 'KEK', 'DEFI', 'APE', 'MOON', 'LAMBO',
+    'ALPHA', 'BETA', 'GAMMA', 'SIGMA', 'DELTA', 'OMEGA', 'ZERO',
+    'PIXEL', 'BLUR', 'RARE', 'PUNKS', 'BAYC', 'AZUKI', 'DEGEN'
+  ]
   
-  const tokens: Token[] = mockSymbols.map((symbol, i) => {
-    const price = Math.random() * 100
+  tokens = mockSymbols.map((symbol, i) => {
+    const baseMarketCap = Math.pow(10, 6 + Math.random() * 4) // 1M to 10B range
+    const priceChange = (Math.random() - 0.5) * 100 // -50% to +50%
+    
     return {
       address: generateAddress(),
       symbol,
       name: `${symbol} Token`,
-      price,
-      priceChange24h: (Math.random() - 0.5) * 200,
-      volume24h: Math.random() * 50000000,
-      liquidity: Math.random() * 10000000,
-      marketCap: Math.random() * 500000000,
-      priceHistory: generatePriceHistory(price),
-      chain: state.selectedChain,
+      price: Math.random() * 1000,
+      priceChange24h: priceChange,
+      volume24h: baseMarketCap * (0.01 + Math.random() * 0.2),
+      liquidity: baseMarketCap * (0.05 + Math.random() * 0.2),
+      marketCap: baseMarketCap,
+      chain: selectedChain,
       pairAddress: generateAddress(),
+      txns24h: Math.floor(Math.random() * 10000),
+      dexId: ['raydium', 'orca', 'jupiter', 'uniswap'][Math.floor(Math.random() * 4)],
     }
   })
 
-  createTilesFromTokens(tokens)
-  updateStats(tokens)
+  updateStats()
+  buildTreemap()
+  render()
 }
 
 function generateAddress(): string {
   return '0x' + Array.from({ length: 40 }, () => Math.floor(Math.random() * 16).toString(16)).join('')
 }
 
-function generatePriceHistory(currentPrice: number): number[] {
-  const history: number[] = []
-  let price = currentPrice * (0.8 + Math.random() * 0.4)
-  for (let i = 0; i < 24; i++) {
-    price *= (0.95 + Math.random() * 0.1)
-    history.push(price)
-  }
-  history.push(currentPrice)
-  return history
-}
-
-function createTilesFromTokens(tokens: Token[]) {
-  state.tiles = tokens.map(token => ({
-    token,
-    x: 0,
-    y: 0,
-    width: CONFIG.baseWidth,
-    height: CONFIG.baseHeight,
-    targetWidth: CONFIG.baseWidth,
-    targetHeight: CONFIG.baseHeight,
-    scale: 1,
-    opacity: 1,
-    preparedName: prepare(token.name.substring(0, 20), FONTS.name),
-    preparedSymbol: prepare(token.symbol, FONTS.symbol),
-    preparedPrice: prepare(formatPrice(token.price), FONTS.price),
-    preparedChange: prepare(formatPercent(token.priceChange24h), FONTS.change),
-  }))
-
-  sortAndFilterTiles()
-  layoutTiles()
-}
-
-function updateStats(tokens: Token[]) {
+function updateStats() {
   const totalVolume = tokens.reduce((sum, t) => sum + t.volume24h, 0)
   const totalMcap = tokens.reduce((sum, t) => sum + t.marketCap, 0)
-  const trendingCount = tokens.filter(t => t.priceChange24h > 10).length
+  const gainers = tokens.filter(t => t.priceChange24h > 0).length
+  const losers = tokens.filter(t => t.priceChange24h < 0).length
 
   totalVolumeEl.textContent = formatCompact(totalVolume)
   totalMcapEl.textContent = formatCompact(totalMcap)
-  trendingCountEl.textContent = String(trendingCount)
+  gainersCountEl.textContent = String(gainers)
+  losersCountEl.textContent = String(losers)
 }
 
-// ==================== LAYOUT ====================
+// ==================== TREEMAP ALGORITHM ====================
 
-function layoutTiles() {
+function buildTreemap() {
+  let filteredTokens = [...tokens]
+  
+  // Apply search filter
+  if (searchQuery) {
+    filteredTokens = filteredTokens.filter(t =>
+      t.symbol.toLowerCase().includes(searchQuery) ||
+      t.name.toLowerCase().includes(searchQuery)
+    )
+  }
+  
+  // Sort by selected metric
+  switch (selectedFilter) {
+    case 'volume':
+      filteredTokens.sort((a, b) => b.volume24h - a.volume24h)
+      break
+    case 'change':
+      filteredTokens.sort((a, b) => Math.abs(b.priceChange24h) - Math.abs(a.priceChange24h))
+      break
+    case 'liquidity':
+      filteredTokens.sort((a, b) => b.liquidity - a.liquidity)
+      break
+    case 'mcap':
+    default:
+      filteredTokens.sort((a, b) => b.marketCap - a.marketCap)
+  }
+  
+  // Get canvas dimensions
   const containerWidth = canvas.width / (window.devicePixelRatio || 1)
   const containerHeight = canvas.height / (window.devicePixelRatio || 1)
   
-  const cols = Math.max(1, Math.floor((containerWidth - CONFIG.padding * 2 + CONFIG.gap) / (CONFIG.baseWidth + CONFIG.gap)))
-  
-  let currentX = CONFIG.padding
-  let currentY = CONFIG.padding
-  let rowHeight = CONFIG.baseHeight
-
-  const visibleTiles = getFilteredTiles()
-
-  visibleTiles.forEach((tile, index) => {
-    const col = index % cols
-    
-    if (col === 0 && index > 0) {
-      currentX = CONFIG.padding
-      currentY += rowHeight + CONFIG.gap
-      rowHeight = CONFIG.baseHeight
+  // Calculate total value based on filter
+  const getValue = (t: Token) => {
+    switch (selectedFilter) {
+      case 'volume': return t.volume24h
+      case 'change': return Math.abs(t.priceChange24h) * 1000000
+      case 'liquidity': return t.liquidity
+      default: return t.marketCap
     }
-
-    tile.x = currentX
-    tile.y = currentY
-    
-    currentX += tile.width + CONFIG.gap
-    rowHeight = Math.max(rowHeight, tile.height)
-  })
+  }
+  
+  const totalValue = filteredTokens.reduce((sum, t) => sum + getValue(t), 0)
+  
+  // Build treemap using squarified algorithm
+  tiles = squarify(
+    filteredTokens.map(token => ({
+      token,
+      value: getValue(token),
+      color: getHeatmapColor(token.priceChange24h),
+      textColor: getTextColor(token.priceChange24h),
+    })),
+    { x: 0, y: 0, width: containerWidth, height: containerHeight },
+    totalValue
+  )
 }
 
-function getFilteredTiles(): TokenTile[] {
-  let tiles = [...state.tiles]
+type TreemapInput = {
+  token: Token
+  value: number
+  color: string
+  textColor: string
+}
 
-  // Apply search filter
-  if (state.searchQuery) {
-    tiles = tiles.filter(t => 
-      t.token.symbol.toLowerCase().includes(state.searchQuery) ||
-      t.token.name.toLowerCase().includes(state.searchQuery)
-    )
+type Rectangle = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+function squarify(
+  items: TreemapInput[],
+  bounds: Rectangle,
+  totalValue: number
+): TreemapTile[] {
+  if (items.length === 0) return []
+  if (items.length === 1) {
+    return [{
+      token: items[0].token,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      color: items[0].color,
+      textColor: items[0].textColor,
+    }]
   }
 
+  const tiles: TreemapTile[] = []
+  let remaining = [...items]
+  let currentBounds = { ...bounds }
+  let remainingValue = totalValue
+
+  while (remaining.length > 0) {
+    const isWide = currentBounds.width >= currentBounds.height
+    const side = isWide ? currentBounds.height : currentBounds.width
+    
+    // Find optimal row
+    let row: TreemapInput[] = []
+    let rowValue = 0
+    let bestRatio = Infinity
+    
+    for (let i = 0; i < remaining.length; i++) {
+      const testRow = remaining.slice(0, i + 1)
+      const testValue = testRow.reduce((s, item) => s + item.value, 0)
+      const ratio = worstRatio(testRow, testValue, side, remainingValue, isWide ? currentBounds.width : currentBounds.height)
+      
+      if (ratio <= bestRatio) {
+        bestRatio = ratio
+        row = testRow
+        rowValue = testValue
+      } else {
+        break
+      }
+    }
+    
+    if (row.length === 0) {
+      row = [remaining[0]]
+      rowValue = remaining[0].value
+    }
+    
+    // Layout row
+    const rowSize = (rowValue / remainingValue) * (isWide ? currentBounds.width : currentBounds.height)
+    let offset = isWide ? currentBounds.x : currentBounds.y
+    
+    for (const item of row) {
+      const itemSize = (item.value / rowValue) * side
+      
+      if (isWide) {
+        tiles.push({
+          token: item.token,
+          x: offset,
+          y: currentBounds.y,
+          width: rowSize,
+          height: itemSize,
+          color: item.color,
+          textColor: item.textColor,
+        })
+        offset += itemSize
+      } else {
+        tiles.push({
+          token: item.token,
+          x: currentBounds.x,
+          y: offset,
+          width: itemSize,
+          height: rowSize,
+          color: item.color,
+          textColor: item.textColor,
+        })
+        offset += itemSize
+      }
+    }
+    
+    // Update bounds
+    if (isWide) {
+      currentBounds.x += rowSize
+      currentBounds.width -= rowSize
+    } else {
+      currentBounds.y += rowSize
+      currentBounds.height -= rowSize
+    }
+    
+    remaining = remaining.slice(row.length)
+    remainingValue -= rowValue
+  }
+  
   return tiles
 }
 
-function sortAndFilterTiles() {
-  switch (state.selectedFilter) {
-    case 'gainers':
-      state.tiles.sort((a, b) => b.token.priceChange24h - a.token.priceChange24h)
-      break
-    case 'losers':
-      state.tiles.sort((a, b) => a.token.priceChange24h - b.token.priceChange24h)
-      break
-    case 'volume':
-      state.tiles.sort((a, b) => b.token.volume24h - a.token.volume24h)
-      break
-    case 'new':
-      // Keep original order for new pairs
-      break
-    case 'trending':
-    default:
-      state.tiles.sort((a, b) => Math.abs(b.token.priceChange24h) - Math.abs(a.token.priceChange24h))
+function worstRatio(
+  row: TreemapInput[],
+  rowValue: number,
+  side: number,
+  totalValue: number,
+  length: number
+): number {
+  if (row.length === 0 || totalValue === 0) return Infinity
+  
+  const rowLength = (rowValue / totalValue) * length
+  let worst = 0
+  
+  for (const item of row) {
+    const itemSize = (item.value / rowValue) * side
+    const ratio = Math.max(rowLength / itemSize, itemSize / rowLength)
+    worst = Math.max(worst, ratio)
   }
-
-  layoutTiles()
+  
+  return worst
 }
 
 // ==================== RENDERING ====================
-
-function renderLoop(timestamp: number) {
-  const deltaTime = timestamp - lastFrameTime
-  lastFrameTime = timestamp
-
-  if (!isLoading) {
-    const startTime = performance.now()
-    
-    updateAnimations(deltaTime)
-    render()
-    
-    const endTime = performance.now()
-    perfCounter.textContent = (endTime - startTime).toFixed(2)
-  }
-
-  animationId = requestAnimationFrame(renderLoop)
-}
-
-function updateAnimations(deltaTime: number) {
-  const visibleTiles = getFilteredTiles()
-
-  visibleTiles.forEach(tile => {
-    // Calculate distance from mouse
-    const tileCenterX = tile.x + tile.width / 2
-    const tileCenterY = tile.y + tile.height / 2
-    const distance = Math.sqrt(
-      Math.pow(mouseX - tileCenterX, 2) + 
-      Math.pow(mouseY - tileCenterY, 2)
-    )
-
-    // Calculate target size based on proximity
-    if (distance < PROXIMITY_RADIUS) {
-      const proximity = 1 - (distance / PROXIMITY_RADIUS)
-      const expansion = proximity * proximity // Ease out
-      tile.targetWidth = CONFIG.baseWidth + (CONFIG.expandedWidth - CONFIG.baseWidth) * expansion
-      tile.targetHeight = CONFIG.baseHeight + (CONFIG.expandedHeight - CONFIG.baseHeight) * expansion
-      tile.scale = 1 + expansion * 0.2
-
-      if (proximity > 0.8) {
-        state.hoveredTile = tile
-      }
-    } else {
-      tile.targetWidth = CONFIG.baseWidth
-      tile.targetHeight = CONFIG.baseHeight
-      tile.scale = 1
-    }
-
-    // Animate towards target
-    tile.width += (tile.targetWidth - tile.width) * ANIMATION_SPEED
-    tile.height += (tile.targetHeight - tile.height) * ANIMATION_SPEED
-  })
-
-  // Re-layout with new sizes
-  layoutTiles()
-}
 
 function render() {
   const containerWidth = canvas.width / (window.devicePixelRatio || 1)
   const containerHeight = canvas.height / (window.devicePixelRatio || 1)
 
   // Clear canvas
-  ctx.fillStyle = EVANGELION_COLORS.navyDark
+  ctx.fillStyle = '#0d0d0d'
   ctx.fillRect(0, 0, containerWidth, containerHeight)
 
-  // Draw grid background
-  drawGridBackground(containerWidth, containerHeight)
-
   // Draw tiles
-  const visibleTiles = getFilteredTiles()
-  visibleTiles.forEach(tile => drawTile(tile))
-
-  // Draw hover detail
-  if (state.hoveredTile) {
-    updateTokenDetail(state.hoveredTile)
+  for (const tile of tiles) {
+    drawTile(tile, tile === hoveredTile)
   }
 }
 
-function drawGridBackground(width: number, height: number) {
-  ctx.strokeStyle = 'rgba(150, 95, 212, 0.1)'
-  ctx.lineWidth = 1
+function drawTile(tile: TreemapTile, isHovered: boolean) {
+  const { token, x, y, width, height, color, textColor } = tile
+  const padding = 1
 
-  const gridSize = 40
-  
-  for (let x = 0; x < width; x += gridSize) {
-    ctx.beginPath()
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, height)
-    ctx.stroke()
+  // Draw background
+  ctx.fillStyle = isHovered ? lightenColor(color, 20) : color
+  ctx.fillRect(x + padding, y + padding, width - padding * 2, height - padding * 2)
+
+  // Draw border for hovered tile
+  if (isHovered) {
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = 2
+    ctx.strokeRect(x + padding, y + padding, width - padding * 2, height - padding * 2)
   }
 
-  for (let y = 0; y < height; y += gridSize) {
-    ctx.beginPath()
-    ctx.moveTo(0, y)
-    ctx.lineTo(width, y)
-    ctx.stroke()
-  }
-}
-
-function drawTile(tile: TokenTile) {
-  const { token, x, y, width, height, scale } = tile
-  const isExpanded = width > CONFIG.baseWidth + 20
-  const isPositive = token.priceChange24h >= 0
-
-  // Save context for transformations
-  ctx.save()
-
-  // Apply scale transform from center
-  const centerX = x + width / 2
-  const centerY = y + height / 2
-  ctx.translate(centerX, centerY)
-  ctx.scale(scale, scale)
-  ctx.translate(-centerX, -centerY)
-
-  // Draw tile background
-  const gradient = ctx.createLinearGradient(x, y, x, y + height)
-  gradient.addColorStop(0, 'rgba(0, 0, 83, 0.9)')
-  gradient.addColorStop(1, 'rgba(0, 0, 43, 0.95)')
+  // Draw text if tile is large enough
+  const minWidth = 50
+  const minHeight = 40
   
-  ctx.fillStyle = gradient
-  ctx.beginPath()
-  roundRect(ctx, x, y, width, height, 4)
-  ctx.fill()
-
-  // Draw border with glow based on price change
-  const borderColor = isPositive ? EVANGELION_COLORS.green : EVANGELION_COLORS.red
-  const glowColor = isPositive ? EVANGELION_COLORS.greenGlow : EVANGELION_COLORS.redGlow
-  
-  ctx.strokeStyle = borderColor
-  ctx.lineWidth = isExpanded ? 2 : 1
-  ctx.shadowColor = glowColor
-  ctx.shadowBlur = isExpanded ? 15 : 5
-  ctx.beginPath()
-  roundRect(ctx, x, y, width, height, 4)
-  ctx.stroke()
-  ctx.shadowBlur = 0
-
-  // Draw content
-  const padding = 12
-  let textY = y + padding
-
-  // Symbol
-  ctx.font = FONTS.symbol
-  ctx.fillStyle = EVANGELION_COLORS.white
-  ctx.textBaseline = 'top'
-  ctx.fillText(token.symbol, x + padding, textY)
-  textY += 20
-
-  // Name (if expanded)
-  if (isExpanded) {
-    ctx.font = FONTS.name
-    ctx.fillStyle = EVANGELION_COLORS.gray
-    const nameResult = layout(tile.preparedName, width - padding * 2, 14)
-    ctx.fillText(truncateText(token.name, width - padding * 2, FONTS.name), x + padding, textY)
-    textY += 18
-  }
-
-  // Price
-  ctx.font = FONTS.price
-  ctx.fillStyle = EVANGELION_COLORS.white
-  ctx.fillText(formatPrice(token.price), x + padding, textY)
-  textY += 22
-
-  // Price change
-  ctx.font = FONTS.change
-  ctx.fillStyle = isPositive ? EVANGELION_COLORS.green : EVANGELION_COLORS.red
-  const changeText = (isPositive ? '+' : '') + token.priceChange24h.toFixed(2) + '%'
-  ctx.fillText(changeText, x + padding, textY)
-  textY += 18
-
-  // Sparkline
-  if (token.priceHistory.length > 1) {
-    const sparklineY = y + height - 30
-    const sparklineHeight = 20
-    const sparklineWidth = width - padding * 2
+  if (width > minWidth && height > minHeight) {
+    ctx.fillStyle = textColor
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
     
-    drawSparkline(
-      token.priceHistory,
-      x + padding,
-      sparklineY,
-      sparklineWidth,
-      sparklineHeight,
-      isPositive ? EVANGELION_COLORS.green : EVANGELION_COLORS.red
-    )
-  }
-
-  // Volume (if expanded)
-  if (isExpanded) {
-    ctx.font = FONTS.detail
-    ctx.fillStyle = EVANGELION_COLORS.gray
-    ctx.fillText(`Vol: ${formatCompact(token.volume24h)}`, x + padding, y + height - 38)
-  }
-
-  ctx.restore()
-}
-
-function drawSparkline(data: number[], x: number, y: number, width: number, height: number, color: string) {
-  if (data.length < 2) return
-
-  const min = Math.min(...data)
-  const max = Math.max(...data)
-  const range = max - min || 1
-
-  ctx.beginPath()
-  ctx.strokeStyle = color
-  ctx.lineWidth = 1.5
-  ctx.lineCap = 'round'
-  ctx.lineJoin = 'round'
-
-  const step = width / (data.length - 1)
-
-  data.forEach((value, i) => {
-    const px = x + i * step
-    const py = y + height - ((value - min) / range) * height
-
-    if (i === 0) {
-      ctx.moveTo(px, py)
-    } else {
-      ctx.lineTo(px, py)
+    const centerX = x + width / 2
+    const centerY = y + height / 2
+    
+    // Symbol
+    const symbolSize = Math.min(Math.max(12, width / 8), 20)
+    ctx.font = `bold ${symbolSize}px Inter, sans-serif`
+    ctx.fillText(token.symbol, centerX, centerY - (height > 60 ? 10 : 0))
+    
+    // Price change (if tall enough)
+    if (height > 60) {
+      const changeSize = Math.min(Math.max(10, width / 10), 14)
+      ctx.font = `600 ${changeSize}px Inter, sans-serif`
+      const changeText = (token.priceChange24h >= 0 ? '+' : '') + token.priceChange24h.toFixed(2) + '%'
+      ctx.fillText(changeText, centerX, centerY + 12)
     }
-  })
-
-  ctx.stroke()
-
-  // Add glow
-  ctx.strokeStyle = color
-  ctx.globalAlpha = 0.3
-  ctx.lineWidth = 4
-  ctx.stroke()
-  ctx.globalAlpha = 1
+    
+    // Price (if very tall)
+    if (height > 90 && width > 80) {
+      const priceSize = Math.min(Math.max(9, width / 12), 11)
+      ctx.font = `500 ${priceSize}px Inter, sans-serif`
+      ctx.fillStyle = adjustOpacity(textColor, 0.7)
+      ctx.fillText(formatPrice(token.price), centerX, centerY + 28)
+    }
+  } else if (width > 30 && height > 25) {
+    // Just symbol for smaller tiles
+    ctx.fillStyle = textColor
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.font = 'bold 10px Inter, sans-serif'
+    ctx.fillText(token.symbol.substring(0, 4), x + width / 2, y + height / 2)
+  }
 }
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  ctx.moveTo(x + r, y)
-  ctx.lineTo(x + w - r, y)
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r)
-  ctx.lineTo(x + w, y + h - r)
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h)
-  ctx.lineTo(x + r, y + h)
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r)
-  ctx.lineTo(x, y + r)
-  ctx.quadraticCurveTo(x, y, x + r, y)
-  ctx.closePath()
+function lightenColor(hex: string, amount: number): string {
+  const num = parseInt(hex.replace('#', ''), 16)
+  const r = Math.min(255, (num >> 16) + amount)
+  const g = Math.min(255, ((num >> 8) & 0x00FF) + amount)
+  const b = Math.min(255, (num & 0x0000FF) + amount)
+  return `rgb(${r}, ${g}, ${b})`
+}
+
+function adjustOpacity(color: string, opacity: number): string {
+  if (color.startsWith('#')) {
+    const num = parseInt(color.replace('#', ''), 16)
+    const r = num >> 16
+    const g = (num >> 8) & 0x00FF
+    const b = num & 0x0000FF
+    return `rgba(${r}, ${g}, ${b}, ${opacity})`
+  }
+  return color
 }
 
 // ==================== EVENT HANDLERS ====================
 
 function handleMouseMove(e: MouseEvent) {
   const rect = canvas.getBoundingClientRect()
-  mouseX = e.clientX - rect.left
-  mouseY = e.clientY - rect.top
+  const mouseX = e.clientX - rect.left
+  const mouseY = e.clientY - rect.top
+
+  let found: TreemapTile | null = null
+  
+  for (const tile of tiles) {
+    if (
+      mouseX >= tile.x &&
+      mouseX <= tile.x + tile.width &&
+      mouseY >= tile.y &&
+      mouseY <= tile.y + tile.height
+    ) {
+      found = tile
+      break
+    }
+  }
+
+  if (found !== hoveredTile) {
+    hoveredTile = found
+    render()
+    
+    if (found) {
+      showHoverPanel(found, e.clientX, e.clientY)
+    } else {
+      hideHoverPanel()
+    }
+  } else if (found) {
+    // Update panel position
+    positionPanel(e.clientX, e.clientY)
+  }
 }
 
 function handleMouseLeave() {
-  mouseX = -1000
-  mouseY = -1000
-  state.hoveredTile = null
-  hideTokenDetail()
+  hoveredTile = null
+  hideHoverPanel()
+  render()
 }
 
 function handleClick(e: MouseEvent) {
-  if (state.hoveredTile) {
-    const token = state.hoveredTile.token
-    // Open DexScreener in new tab
+  if (hoveredTile) {
+    const token = hoveredTile.token
     window.open(`https://dexscreener.com/${token.chain}/${token.pairAddress}`, '_blank')
   }
 }
 
-// ==================== TOKEN DETAIL ====================
+// ==================== HOVER PANEL ====================
 
-function updateTokenDetail(tile: TokenTile) {
+function showHoverPanel(tile: TreemapTile, clientX: number, clientY: number) {
   const token = tile.token
   const isPositive = token.priceChange24h >= 0
 
-  tokenDetail.classList.add('visible')
+  hoverPanel.classList.add('visible')
   
-  // Position detail panel
-  const detailWidth = 320
-  const detailHeight = 200
-  let detailX = tile.x + tile.width + 16
-  let detailY = tile.y
-
-  const containerWidth = canvas.width / (window.devicePixelRatio || 1)
-  const containerHeight = canvas.height / (window.devicePixelRatio || 1)
-
-  // Keep within bounds
-  if (detailX + detailWidth > containerWidth) {
-    detailX = tile.x - detailWidth - 16
-  }
-  if (detailY + detailHeight > containerHeight) {
-    detailY = containerHeight - detailHeight - 16
-  }
-
-  tokenDetail.style.left = `${detailX}px`
-  tokenDetail.style.top = `${detailY}px`
-
   // Update content
-  const iconEl = document.getElementById('detail-icon') as HTMLDivElement
-  const nameEl = document.getElementById('detail-name') as HTMLHeadingElement
-  const addressEl = document.getElementById('detail-address') as HTMLParagraphElement
-  const priceEl = document.getElementById('detail-price') as HTMLDivElement
-  const changeEl = document.getElementById('detail-change') as HTMLDivElement
-  const volumeEl = document.getElementById('detail-volume') as HTMLDivElement
-  const liquidityEl = document.getElementById('detail-liquidity') as HTMLDivElement
-  const mcapEl = document.getElementById('detail-mcap') as HTMLDivElement
+  const iconEl = document.getElementById('panel-icon') as HTMLDivElement
+  const nameEl = document.getElementById('panel-name') as HTMLHeadingElement
+  const addressEl = document.getElementById('panel-address') as HTMLParagraphElement
+  const priceEl = document.getElementById('panel-price') as HTMLDivElement
+  const changeEl = document.getElementById('panel-change') as HTMLDivElement
+  const volumeEl = document.getElementById('panel-volume') as HTMLDivElement
+  const liquidityEl = document.getElementById('panel-liquidity') as HTMLDivElement
+  const mcapEl = document.getElementById('panel-mcap') as HTMLDivElement
+  const txnsEl = document.getElementById('panel-txns') as HTMLDivElement
 
   iconEl.textContent = token.symbol.substring(0, 2)
-  iconEl.style.background = isPositive ? EVANGELION_COLORS.green : EVANGELION_COLORS.red
+  iconEl.style.background = isPositive ? '#00cc66' : '#ff4444'
   nameEl.textContent = token.name
   addressEl.textContent = truncateAddress(token.address)
   priceEl.textContent = formatPrice(token.price)
@@ -779,97 +714,121 @@ function updateTokenDetail(tile: TokenTile) {
   volumeEl.textContent = formatCompact(token.volume24h)
   liquidityEl.textContent = formatCompact(token.liquidity)
   mcapEl.textContent = formatCompact(token.marketCap)
+  txnsEl.textContent = formatNumber(token.txns24h)
 
-  // Draw chart in detail
-  drawDetailChart(token)
-}
-
-function hideTokenDetail() {
-  tokenDetail.classList.remove('visible')
-}
-
-function drawDetailChart(token: Token) {
-  const chartContainer = document.getElementById('detail-chart') as HTMLDivElement
-  chartContainer.innerHTML = ''
-
-  const chartCanvas = document.createElement('canvas')
-  chartCanvas.width = 288
-  chartCanvas.height = 80
-  chartCanvas.style.width = '100%'
-  chartCanvas.style.height = '100%'
-  chartContainer.appendChild(chartCanvas)
-
-  const chartCtx = chartCanvas.getContext('2d')
-  if (!chartCtx) return
-
-  const data = token.priceHistory
-  const isPositive = token.priceChange24h >= 0
-  const color = isPositive ? EVANGELION_COLORS.green : EVANGELION_COLORS.red
-
-  const min = Math.min(...data)
-  const max = Math.max(...data)
-  const range = max - min || 1
-  const width = chartCanvas.width
-  const height = chartCanvas.height
-  const step = width / (data.length - 1)
-
-  // Fill gradient
-  const gradient = chartCtx.createLinearGradient(0, 0, 0, height)
-  gradient.addColorStop(0, isPositive ? 'rgba(88, 242, 165, 0.3)' : 'rgba(232, 25, 0, 0.3)')
-  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)')
-
-  chartCtx.beginPath()
-  chartCtx.moveTo(0, height)
+  // Generate mock trades
+  generateMockTrades(token)
   
-  data.forEach((value, i) => {
-    const px = i * step
-    const py = height - ((value - min) / range) * height
-    chartCtx.lineTo(px, py)
-  })
+  // Generate mock pools
+  generateMockPools(token)
 
-  chartCtx.lineTo(width, height)
-  chartCtx.closePath()
-  chartCtx.fillStyle = gradient
-  chartCtx.fill()
+  positionPanel(clientX, clientY)
+}
 
-  // Draw line
-  chartCtx.beginPath()
-  chartCtx.strokeStyle = color
-  chartCtx.lineWidth = 2
-  chartCtx.lineCap = 'round'
-  chartCtx.lineJoin = 'round'
+function positionPanel(clientX: number, clientY: number) {
+  const panelRect = hoverPanel.getBoundingClientRect()
+  const padding = 16
+  
+  let left = clientX + padding
+  let top = clientY + padding
+  
+  // Keep within viewport
+  if (left + panelRect.width > window.innerWidth) {
+    left = clientX - panelRect.width - padding
+  }
+  if (top + panelRect.height > window.innerHeight) {
+    top = clientY - panelRect.height - padding
+  }
+  
+  // Ensure minimum position
+  left = Math.max(padding, left)
+  top = Math.max(padding, top)
+  
+  hoverPanel.style.left = `${left}px`
+  hoverPanel.style.top = `${top}px`
+}
 
-  data.forEach((value, i) => {
-    const px = i * step
-    const py = height - ((value - min) / range) * height
-    if (i === 0) {
-      chartCtx.moveTo(px, py)
-    } else {
-      chartCtx.lineTo(px, py)
-    }
-  })
+function hideHoverPanel() {
+  hoverPanel.classList.remove('visible')
+}
 
-  chartCtx.stroke()
+function generateMockTrades(token: Token) {
+  const tradesList = document.getElementById('trades-list') as HTMLDivElement
+  const trades: Trade[] = []
+  
+  for (let i = 0; i < 8; i++) {
+    const isBuy = Math.random() > 0.5
+    const amount = (Math.random() * 10000).toFixed(2)
+    const price = (token.price * (0.99 + Math.random() * 0.02)).toFixed(6)
+    const minutes = Math.floor(Math.random() * 60)
+    
+    trades.push({
+      type: isBuy ? 'buy' : 'sell',
+      amount: `$${formatCompact(parseFloat(amount))}`,
+      price: `$${price}`,
+      time: `${minutes}m ago`,
+    })
+  }
+  
+  tradesList.innerHTML = trades.map(trade => `
+    <div class="trade-item">
+      <span class="trade-type ${trade.type}">${trade.type}</span>
+      <span class="trade-amount">${trade.amount}</span>
+      <span class="trade-price">${trade.price}</span>
+      <span class="trade-time">${trade.time}</span>
+    </div>
+  `).join('')
+}
+
+function generateMockPools(token: Token) {
+  const poolsList = document.getElementById('pools-list') as HTMLDivElement
+  const dexes = ['Raydium', 'Orca', 'Jupiter', 'Meteora']
+  const pairs = ['USDC', 'SOL', 'USDT']
+  
+  const pools: Pool[] = []
+  
+  for (let i = 0; i < 4; i++) {
+    pools.push({
+      pair: `${token.symbol}/${pairs[i % pairs.length]}`,
+      dex: dexes[i % dexes.length],
+      liquidity: token.liquidity * (0.2 + Math.random() * 0.3),
+      volume24h: token.volume24h * (0.1 + Math.random() * 0.4),
+      apr: Math.random() * 200,
+    })
+  }
+  
+  poolsList.innerHTML = pools.map(pool => `
+    <div class="pool-item">
+      <div class="pool-header">
+        <span class="pool-pair">${pool.pair}</span>
+        <span class="pool-dex">${pool.dex}</span>
+      </div>
+      <div class="pool-stats">
+        <div class="pool-stat">
+          <span class="pool-stat-label">Liquidity</span>
+          <span class="pool-stat-value">${formatCompact(pool.liquidity)}</span>
+        </div>
+        <div class="pool-stat">
+          <span class="pool-stat-label">Volume 24h</span>
+          <span class="pool-stat-value">${formatCompact(pool.volume24h)}</span>
+        </div>
+        <div class="pool-stat">
+          <span class="pool-stat-label">APR</span>
+          <span class="pool-stat-value">${pool.apr.toFixed(1)}%</span>
+        </div>
+      </div>
+    </div>
+  `).join('')
 }
 
 // ==================== UTILITY FUNCTIONS ====================
 
 function formatPrice(price: number): string {
-  if (price >= 1000) {
-    return '$' + price.toLocaleString('en-US', { maximumFractionDigits: 2 })
-  } else if (price >= 1) {
-    return '$' + price.toFixed(2)
-  } else if (price >= 0.001) {
-    return '$' + price.toFixed(4)
-  } else if (price >= 0.000001) {
-    return '$' + price.toFixed(6)
-  } else {
-    return '$' + price.toExponential(2)
-  }
-}
-
-function formatPercent(value: number): string {
-  return (value >= 0 ? '+' : '') + value.toFixed(2) + '%'
+  if (price >= 1000) return '$' + price.toLocaleString('en-US', { maximumFractionDigits: 2 })
+  if (price >= 1) return '$' + price.toFixed(2)
+  if (price >= 0.001) return '$' + price.toFixed(4)
+  if (price >= 0.000001) return '$' + price.toFixed(6)
+  return '$' + price.toExponential(2)
 }
 
 function formatCompact(value: number): string {
@@ -879,39 +838,15 @@ function formatCompact(value: number): string {
   return '$' + value.toFixed(0)
 }
 
+function formatNumber(value: number): string {
+  if (value >= 1e6) return (value / 1e6).toFixed(1) + 'M'
+  if (value >= 1e3) return (value / 1e3).toFixed(1) + 'K'
+  return value.toLocaleString()
+}
+
 function truncateAddress(address: string): string {
   if (address.length <= 12) return address
   return address.slice(0, 6) + '...' + address.slice(-4)
-}
-
-function truncateText(text: string, maxWidth: number, font: string): string {
-  ctx.font = font
-  if (ctx.measureText(text).width <= maxWidth) return text
-  
-  let truncated = text
-  while (truncated.length > 0 && ctx.measureText(truncated + '...').width > maxWidth) {
-    truncated = truncated.slice(0, -1)
-  }
-  return truncated + '...'
-}
-
-// ==================== ALERTS ====================
-
-function triggerAlert(type: 'pump' | 'dump') {
-  alertFlash.className = `alert-flash ${type}`
-  
-  if (type === 'dump') {
-    evaWarning.classList.add('visible')
-    evaWarning.textContent = 'WARNING: Significant Dump Detected'
-  } else {
-    evaWarning.classList.add('visible')
-    evaWarning.textContent = 'ALERT: Major Pump in Progress'
-  }
-
-  setTimeout(() => {
-    alertFlash.className = 'alert-flash'
-    evaWarning.classList.remove('visible')
-  }, 2000)
 }
 
 // ==================== START ====================
