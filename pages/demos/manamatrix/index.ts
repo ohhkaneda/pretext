@@ -36,6 +36,10 @@ type TreemapTile = {
   height: number
   color: string
   textColor: string
+  originalX?: number
+  originalY?: number
+  originalWidth?: number
+  originalHeight?: number
 }
 
 type Trade = {
@@ -65,6 +69,9 @@ let selectedFilter = 'mcap'
 let searchQuery = ''
 let isLoading = true
 let activeTab = 'trades'
+let mouseX = 0
+let mouseY = 0
+let animationFrameId: number | null = null
 
 // ==================== DOM ELEMENTS ====================
 
@@ -136,7 +143,8 @@ async function init() {
     loadingOverlay.style.display = 'none'
   }, 300)
 
-  render()
+  // Start animation loop for proximity effects
+  startAnimationLoop()
   
   // Poll for updates every 30 seconds
   setInterval(fetchTokenData, 30000)
@@ -408,6 +416,14 @@ function buildTreemap() {
     { x: 0, y: 0, width: containerWidth, height: containerHeight },
     totalValue
   )
+  
+  // Store original positions for proximity calculations
+  tiles.forEach(tile => {
+    tile.originalX = tile.x
+    tile.originalY = tile.y
+    tile.originalWidth = tile.width
+    tile.originalHeight = tile.height
+  })
 }
 
 type TreemapInput = {
@@ -544,6 +560,60 @@ function worstRatio(
   return worst
 }
 
+// ==================== ANIMATION LOOP ====================
+
+function startAnimationLoop() {
+  function frame() {
+    updateProximityPositions()
+    render()
+    animationFrameId = requestAnimationFrame(frame)
+  }
+  animationFrameId = requestAnimationFrame(frame)
+}
+
+function updateProximityPositions() {
+  const proximityRadius = 200
+  const maxExpansion = 1.3
+  
+  for (const tile of tiles) {
+    if (!tile.originalX || !tile.originalY || !tile.originalWidth || !tile.originalHeight) continue
+    
+    const centerX = tile.originalX + tile.originalWidth / 2
+    const centerY = tile.originalY + tile.originalHeight / 2
+    
+    const dx = mouseX - centerX
+    const dy = mouseY - centerY
+    const distance = Math.sqrt(dx * dx + dy * dy)
+    
+    if (distance < proximityRadius) {
+      // Calculate expansion factor (1 to maxExpansion)
+      const proximity = 1 - (distance / proximityRadius)
+      const expansionFactor = 1 + (maxExpansion - 1) * proximity
+      
+      // Calculate push direction (away from mouse)
+      const angle = Math.atan2(dy, dx)
+      const pushDistance = (proximity * 30) * (1 - proximity * 0.5)
+      
+      // Apply expansion and push
+      const expandedWidth = tile.originalWidth * expansionFactor
+      const expandedHeight = tile.originalHeight * expansionFactor
+      const offsetX = Math.cos(angle) * pushDistance
+      const offsetY = Math.sin(angle) * pushDistance
+      
+      tile.x = tile.originalX + (expandedWidth - tile.originalWidth) / 2 + offsetX
+      tile.y = tile.originalY + (expandedHeight - tile.originalHeight) / 2 + offsetY
+      tile.width = expandedWidth
+      tile.height = expandedHeight
+    } else {
+      // Return to original position smoothly
+      tile.x += (tile.originalX - tile.x) * 0.1
+      tile.y += (tile.originalY - tile.y) * 0.1
+      tile.width += (tile.originalWidth - tile.width) * 0.1
+      tile.height += (tile.originalHeight - tile.height) * 0.1
+    }
+  }
+}
+
 // ==================== RENDERING ====================
 
 function render() {
@@ -640,8 +710,8 @@ function adjustOpacity(color: string, opacity: number): string {
 
 function handleMouseMove(e: MouseEvent) {
   const rect = canvas.getBoundingClientRect()
-  const mouseX = e.clientX - rect.left
-  const mouseY = e.clientY - rect.top
+  mouseX = e.clientX - rect.left
+  mouseY = e.clientY - rect.top
 
   let found: TreemapTile | null = null
   
@@ -659,7 +729,6 @@ function handleMouseMove(e: MouseEvent) {
 
   if (found !== hoveredTile) {
     hoveredTile = found
-    render()
     
     if (found) {
       showHoverPanel(found, e.clientX, e.clientY)
